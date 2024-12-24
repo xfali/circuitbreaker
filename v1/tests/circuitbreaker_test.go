@@ -18,6 +18,7 @@ package tests
 
 import (
 	"context"
+	"github.com/xfali/circuitbreaker"
 	"github.com/xfali/circuitbreaker/counter"
 	"github.com/xfali/circuitbreaker/v1"
 	"io"
@@ -27,7 +28,7 @@ import (
 )
 
 func TestDefault(t *testing.T) {
-	cb := circuitbreakerv1.NewCircuitBreaker[string](&circuitbreakerv1.Config{
+	cb := circuitbreakerv1.NewCircuitBreaker[string](&circuitbreaker.Config{
 		Interval: 3 * time.Second,
 		Counter: counter.NewCounter(func(consecutiveFailures uint64) bool {
 			return consecutiveFailures == 2
@@ -50,7 +51,7 @@ func TestDefault(t *testing.T) {
 	})
 	t.Run("ExecuteWithFallback", func(t *testing.T) {
 		for i := 0; i < 1000; i++ {
-			v, err := cb.ExecuteWithFallback(ctx, test, fallback)
+			v, err := cb.Go(ctx, test, fallback)
 			if err != nil {
 				t.Log(err)
 			} else {
@@ -85,7 +86,7 @@ func TestDefault(t *testing.T) {
 						t.Log(o)
 					}
 				}()
-				v, err := cb.ExecuteWithFallback(ctx, testPanic, fallbackPanic)
+				v, err := cb.Go(ctx, testPanic, fallbackPanic)
 				if err != nil {
 					t.Log(err)
 				} else {

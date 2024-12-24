@@ -18,28 +18,11 @@ package circuitbreakerv1
 
 import (
 	"context"
+	"github.com/xfali/circuitbreaker"
 	"io"
 )
 
-type State int32
-
-const (
-	StateClosed   State = 0
-	StateOpen     State = 1
-	StateHalfOpen State = 2
-)
-
-var (
-	stateNameMap = map[State]string{
-		StateClosed:   "CLOSED",
-		StateOpen:     "OPEN",
-		StateHalfOpen: "HALF_OPEN",
-	}
-)
-
-func (s State) String() string {
-	return stateNameMap[s]
-}
+type State = circuitbreaker.State
 
 type Runnable[T any] func(ctx context.Context) (T, error)
 
