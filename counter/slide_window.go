@@ -16,59 +16,105 @@
 
 package counter
 
+import (
+	"sync"
+	"time"
+)
+
 type Rate int8
 
-type SlideWindowCounter struct {
-	requests    []uint64
-	size        int
-	index       int
-	count       uint64
-	failures    uint64
-	failureRate Rate
+type bucket struct {
+	failure uint64
+	success uint64
 }
 
-func NewSlideWindowCounter(size int, failureRate Rate) *SlideWindowCounter {
+type SlideWindowCounter struct {
+	buckets     map[int64]*bucket
+	failureRate Rate
+	window      time.Duration
+
+	locker sync.Mutex
+}
+
+func NewSlideWindowCounter(failureRate Rate, window time.Duration) *SlideWindowCounter {
+	if failureRate < 0 || failureRate > 100 {
+		panic("failureRate Must be between 0 and 100 ")
+	}
 	return &SlideWindowCounter{
-		requests:    make([]uint64, size),
-		size:        size,
+		buckets:     map[int64]*bucket{},
+		window:      window,
 		failureRate: failureRate,
 	}
 }
 
 func (c *SlideWindowCounter) MarkRequest() {
-	//if c.count < c.size {
-	//	c.count++
-	//} else {
-	//	if c.requests[c.index] == 1 {
-	//
-	//	}
-	//}
+	c.locker.Lock()
+	defer c.locker.Unlock()
+
+	c.purgeBucket()
+}
+
+func (c *SlideWindowCounter) currentBucket() *bucket {
+	t := time.Now().Unix()
+	if b, ok := c.buckets[t]; ok {
+		return b
+	}
+	delete(c.buckets, t-int64(c.window/time.Second))
+	b := &bucket{}
+	c.buckets[t] = b
+	return b
+}
+
+func (c *SlideWindowCounter) purgeBucket() {
+	t := time.Now().Add(-c.window).Unix()
+	for k := range c.buckets {
+		if k < t {
+			delete(c.buckets, k)
+		}
+	}
 }
 
 func (c *SlideWindowCounter) MarkSuccess() {
-	c.requests[c.index] = 0
-	c.index = (c.index + 1) % c.size
+	c.locker.Lock()
+	defer c.locker.Unlock()
+
+	b := c.currentBucket()
+	b.success++
 }
 
 func (c *SlideWindowCounter) MarkFailure() {
-	c.requests[c.index] = 1
-	c.failures++
-	c.index = (c.index + 1) % c.size
+	c.locker.Lock()
+	defer c.locker.Unlock()
+
+	b := c.currentBucket()
+	b.failure++
 }
 
 func (c *SlideWindowCounter) Triggered() bool {
+	c.locker.Lock()
+	defer c.locker.Unlock()
+
+	c.purgeBucket()
 	return c.calc() > c.failureRate
 }
 
 func (c *SlideWindowCounter) calc() Rate {
-	if c.count == 0 {
-		return 0
+	var failures uint64 = 0
+	var successes uint64 = 0
+	for _, b := range c.buckets {
+		failures += b.failure
+		successes += b.success
 	}
-	return Rate(c.failures * 100 / c.count)
+	return Rate(failures * 100 / (failures + successes))
 }
 
 func (c *SlideWindowCounter) Reset() {
+	c.locker.Lock()
+	defer c.locker.Unlock()
 
+	for k := range c.buckets {
+		delete(c.buckets, k)
+	}
 }
 
 func (c *SlideWindowCounter) Stop() {
