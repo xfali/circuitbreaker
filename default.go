@@ -26,38 +26,42 @@ import (
 	"time"
 )
 
+type Event int8
+
 const (
-	EventTriggered = iota
+	EventTriggered Event = iota
 	EventFailure
 	EventSuccess
 	EventExpired
 )
 
 var (
-	UnknownState  = errors.New("Unsupported state ")
+	OpenStateErr  = errors.New("Circuit breaker is opened ")
 	defaultConfig = &Config{
 		Interval: 60 * time.Second,
 		Counter:  counter.NewCounter(counter.DefaultAllowFunc),
 	}
+	eventNameMap = map[Event]string{
+		EventTriggered: "EventTriggered",
+		EventFailure:   "EventFailure",
+		EventSuccess:   "EventSuccess",
+		EventExpired:   "EventExpired",
+	}
 )
 
-type Opt[T any] func(*defaultCircuitBreaker[T])
+func (e Event) String() string {
+	return eventNameMap[e]
+}
 
 type defaultCircuitBreaker[T any] struct {
 	logger xlog.Logger
 
 	expiry     time.Time
 	expiryLock sync.RWMutex
+	fsm        fsm.FSM
 
-	fsm      fsm.FSM
 	interval time.Duration
 	counter  counter.Counter
-}
-
-type Config struct {
-	Interval time.Duration
-
-	Counter counter.Counter
 }
 
 func NewCircuitBreaker[T any](conf *Config) *defaultCircuitBreaker[T] {
@@ -66,7 +70,15 @@ func NewCircuitBreaker[T any](conf *Config) *defaultCircuitBreaker[T] {
 		logger:   xlog.GetLogger(),
 		interval: conf.Interval,
 		counter:  conf.Counter,
-		fsm:      fsm.NewSimpleFSM(),
+	}
+	if conf.Settings != nil {
+		if s, ok := conf.Settings.(*defaultSettings); ok {
+			ret.fsm = s.fsm
+		}
+	}
+	if ret.fsm == nil {
+		ret.fsm = fsm.NewSimpleFSM()
+		ret.fsm.SetListener(&fsm.DefaultListener{Silent: true})
 	}
 
 	ret.fsm.Initial(StateClosed)
@@ -74,12 +86,21 @@ func NewCircuitBreaker[T any](conf *Config) *defaultCircuitBreaker[T] {
 	_ = ret.fsm.AddState(StateOpen, EventExpired, ret.halfActon)
 	_ = ret.fsm.AddState(StateHalfOpen, EventFailure, ret.halfFailureActon)
 	_ = ret.fsm.AddState(StateHalfOpen, EventSuccess, ret.halfSuccessAction)
+
+	err := ret.fsm.Start()
+	if err != nil {
+		ret.logger.Errorln(err)
+	}
 	return ret
 }
 
-func (cb *defaultCircuitBreaker) failureActon(p interface{}) (fsm.State, error) {
+func (cb *defaultCircuitBreaker[T]) Close() error {
+	return cb.fsm.Close()
+}
+
+func (cb *defaultCircuitBreaker[T]) failureActon(p interface{}) (fsm.State, error) {
 	if cb.counter.Triggered() {
-		cb.SetExpiry(time.Now().Add(cb.interval))
+		cb.setExpiry(time.Now().Add(cb.interval))
 		err := cb.fsm.SendEvent(EventTriggered, nil)
 		if err != nil {
 			cb.logger.Errorln(err)
@@ -90,28 +111,28 @@ func (cb *defaultCircuitBreaker) failureActon(p interface{}) (fsm.State, error) 
 	}
 }
 
-func (cb *defaultCircuitBreaker) halfActon(p interface{}) (fsm.State, error) {
-	cb.SetExpiry(time.Time{})
+func (cb *defaultCircuitBreaker[T]) halfActon(p interface{}) (fsm.State, error) {
+	cb.setExpiry(time.Time{})
 	return StateHalfOpen, nil
 }
 
-func (cb *defaultCircuitBreaker) halfFailureActon(p interface{}) (fsm.State, error) {
-	cb.SetExpiry(time.Now().Add(cb.interval))
+func (cb *defaultCircuitBreaker[T]) halfFailureActon(p interface{}) (fsm.State, error) {
+	cb.setExpiry(time.Now().Add(cb.interval))
 	return StateOpen, nil
 }
 
-func (cb *defaultCircuitBreaker) halfSuccessAction(p interface{}) (fsm.State, error) {
+func (cb *defaultCircuitBreaker[T]) halfSuccessAction(p interface{}) (fsm.State, error) {
 	return StateClosed, nil
 }
 
-func (cb *defaultCircuitBreaker) GetState() State {
+func (cb *defaultCircuitBreaker[T]) GetState() State {
 	state := cb.fsm.Current()
 	return (*state).(State)
 }
 
-func (cb *defaultCircuitBreaker) Name() string {
-	return ""
-}
+//func (cb *defaultCircuitBreaker) Name() string {
+//	return ""
+//}
 
 func (cb *defaultCircuitBreaker[T]) Execute(ctx context.Context, runnable Runnable[T]) (v T, err error) {
 	return cb.ExecuteWithFallback(ctx, runnable, nil)
@@ -122,6 +143,8 @@ func (cb *defaultCircuitBreaker[T]) ExecuteWithFallback(ctx context.Context, run
 	if cb.GetState() == StateOpen {
 		if fallback != nil {
 			return safeRun(ctx, fallback)
+		} else {
+			return v, OpenStateErr
 		}
 	}
 
@@ -144,11 +167,19 @@ func (cb *defaultCircuitBreaker[T]) ExecuteWithFallback(ctx context.Context, run
 
 	v, err = runnable(ctx)
 
-	cb.release(err == nil)
+	if err != nil {
+		if fallback != nil {
+			v, err = safeRun(ctx, fallback)
+		}
+		cb.release(false)
+	} else {
+		cb.release(true)
+	}
+
 	return v, err
 }
 
-func safeRun[T](ctx context.Context, runnable Runnable[T]) (v T, err error) {
+func safeRun[T any](ctx context.Context, runnable Runnable[T]) (v T, err error) {
 	defer func(pe *error) {
 		if oo := recover(); oo != nil {
 			if oErr, ok := oo.(error); ok {
@@ -162,7 +193,7 @@ func safeRun[T](ctx context.Context, runnable Runnable[T]) (v T, err error) {
 	return
 }
 
-func (cb *defaultCircuitBreaker) isExpired(now time.Time) bool {
+func (cb *defaultCircuitBreaker[T]) isExpired(now time.Time) bool {
 	cb.expiryLock.RLock()
 	defer cb.expiryLock.RUnlock()
 	if !cb.expiry.IsZero() && cb.expiry.Before(now) {
@@ -171,14 +202,14 @@ func (cb *defaultCircuitBreaker) isExpired(now time.Time) bool {
 	return false
 }
 
-func (cb *defaultCircuitBreaker) SetExpiry(t time.Time) {
+func (cb *defaultCircuitBreaker[T]) setExpiry(t time.Time) {
 	cb.expiryLock.Lock()
 	defer cb.expiryLock.Unlock()
 
 	cb.expiry = t
 }
 
-func (cb *defaultCircuitBreaker) acquire() {
+func (cb *defaultCircuitBreaker[T]) acquire() {
 	cb.counter.MarkRequest()
 	now := time.Now()
 	if cb.isExpired(now) {
@@ -189,7 +220,7 @@ func (cb *defaultCircuitBreaker) acquire() {
 	}
 }
 
-func (cb *defaultCircuitBreaker) release(success bool) {
+func (cb *defaultCircuitBreaker[T]) release(success bool) {
 	if success {
 		cb.counter.MarkSuccess()
 		err := cb.fsm.SendEvent(EventSuccess, nil)
@@ -205,17 +236,33 @@ func (cb *defaultCircuitBreaker) release(success bool) {
 	}
 }
 
-func loadDefault(conf *Config) *Config {
-	if conf == nil {
-		return defaultConfig
-	}
+type defaultSettings struct {
+	fsm fsm.FSM
+}
 
-	if conf.Counter == nil {
-		conf.Counter = defaultConfig.Counter
-	}
+func NewSettings() *defaultSettings {
+	return &defaultSettings{}
+}
 
-	if conf.Interval == 0 {
-		conf.Interval = defaultConfig.Interval
+func (s *defaultSettings) SetStateMachine(fsm fsm.FSM) *defaultSettings {
+	s.fsm = fsm
+	return s
+}
+
+func (s *defaultSettings) Set(key string, value interface{}) Settings {
+	if key == "fsm" {
+		s.fsm = value.(fsm.FSM)
 	}
-	return conf
+	return s
+}
+
+type defaultOpts struct {
+}
+
+var DefaultOpts defaultOpts
+
+func (o defaultOpts) SetFsm(stateMachine fsm.FSM) Opt {
+	return func(settings Settings) {
+		settings.Set("fsm", stateMachine)
+	}
 }

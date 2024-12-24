@@ -24,16 +24,16 @@ type SimpleCounter struct {
 	FailureNum          uint64
 	ConsecutiveFailures uint64
 
-	allowFunc func(consecutiveFailures uint64) bool
+	checkFunc func(consecutiveFailures uint64) bool
 }
 
 func DefaultAllowFunc(consecutiveFailures uint64) bool {
 	return consecutiveFailures > 5
 }
 
-func NewCounter(allowFunc func(consecutiveFailures uint64) bool) *SimpleCounter {
+func NewCounter(checkFunc func(consecutiveFailures uint64) bool) *SimpleCounter {
 	return &SimpleCounter{
-		allowFunc: allowFunc,
+		checkFunc: checkFunc,
 	}
 }
 
@@ -52,7 +52,7 @@ func (c *SimpleCounter) MarkFailure() {
 }
 
 func (c *SimpleCounter) Triggered() bool {
-	return c.allowFunc(atomic.LoadUint64(&c.ConsecutiveFailures))
+	return c.checkFunc(atomic.LoadUint64(&c.ConsecutiveFailures))
 }
 
 func (c *SimpleCounter) Reset() {

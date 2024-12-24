@@ -17,38 +17,35 @@
 package circuitbreaker
 
 import (
-	"context"
-	"io"
+	"github.com/xfali/circuitbreaker/counter"
+	"time"
 )
 
-type State int32
+type Opt func(Settings)
 
-const (
-	StateClosed   State = 0
-	StateOpen     State = 1
-	StateHalfOpen State = 2
-)
-
-var (
-	stateNameMap = map[State]string{
-		StateClosed:   "CLOSED",
-		StateOpen:     "OPEN",
-		StateHalfOpen: "HALF_OPEN",
-	}
-)
-
-func (s State) String() string {
-	return stateNameMap[s]
+type Settings interface {
+	Set(key string, value interface{}) Settings
 }
 
-type Runnable[T any] func(ctx context.Context) (T, error)
+type Config struct {
+	Interval time.Duration
 
-type CircuitBreaker[T any] interface {
-	GetState() State
+	Counter counter.Counter
 
-	Execute(ctx context.Context, runnable Runnable[T]) (T, error)
+	Settings Settings
+}
 
-	ExecuteWithFallback(ctx context.Context, runnable, fallback Runnable[T]) (T, error)
+func loadDefault(conf *Config) *Config {
+	if conf == nil {
+		return defaultConfig
+	}
 
-	io.Closer
+	if conf.Counter == nil {
+		conf.Counter = defaultConfig.Counter
+	}
+
+	if conf.Interval == 0 {
+		conf.Interval = defaultConfig.Interval
+	}
+	return conf
 }
