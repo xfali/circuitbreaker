@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package circuitbreaker
+package circuitbreakerv1
 
 import (
 	"context"
@@ -53,7 +53,7 @@ func (e Event) String() string {
 	return eventNameMap[e]
 }
 
-type defaultCircuitBreaker struct {
+type defaultCircuitBreaker[T any] struct {
 	logger xlog.Logger
 
 	expiry     time.Time
@@ -64,9 +64,9 @@ type defaultCircuitBreaker struct {
 	counter  counter.Counter
 }
 
-func NewCircuitBreaker(conf *Config) *defaultCircuitBreaker {
+func NewCircuitBreaker[T any](conf *Config) *defaultCircuitBreaker[T] {
 	conf = loadDefault(conf)
-	ret := &defaultCircuitBreaker{
+	ret := &defaultCircuitBreaker[T]{
 		logger:   xlog.GetLogger(),
 		interval: conf.Interval,
 		counter:  conf.Counter,
@@ -94,11 +94,11 @@ func NewCircuitBreaker(conf *Config) *defaultCircuitBreaker {
 	return ret
 }
 
-func (cb *defaultCircuitBreaker) Close() error {
+func (cb *defaultCircuitBreaker[T]) Close() error {
 	return cb.fsm.Close()
 }
 
-func (cb *defaultCircuitBreaker) failureActon(p interface{}) (fsm.State, error) {
+func (cb *defaultCircuitBreaker[T]) failureActon(p interface{}) (fsm.State, error) {
 	if cb.counter.Triggered() {
 		cb.setExpiry(time.Now().Add(cb.interval))
 		err := cb.fsm.SendEvent(EventTriggered, nil)
@@ -111,21 +111,21 @@ func (cb *defaultCircuitBreaker) failureActon(p interface{}) (fsm.State, error) 
 	}
 }
 
-func (cb *defaultCircuitBreaker) halfActon(p interface{}) (fsm.State, error) {
+func (cb *defaultCircuitBreaker[T]) halfActon(p interface{}) (fsm.State, error) {
 	cb.setExpiry(time.Time{})
 	return StateHalfOpen, nil
 }
 
-func (cb *defaultCircuitBreaker) halfFailureActon(p interface{}) (fsm.State, error) {
+func (cb *defaultCircuitBreaker[T]) halfFailureActon(p interface{}) (fsm.State, error) {
 	cb.setExpiry(time.Now().Add(cb.interval))
 	return StateOpen, nil
 }
 
-func (cb *defaultCircuitBreaker) halfSuccessAction(p interface{}) (fsm.State, error) {
+func (cb *defaultCircuitBreaker[T]) halfSuccessAction(p interface{}) (fsm.State, error) {
 	return StateClosed, nil
 }
 
-func (cb *defaultCircuitBreaker) GetState() State {
+func (cb *defaultCircuitBreaker[T]) GetState() State {
 	state := cb.fsm.Current()
 	return (*state).(State)
 }
@@ -134,24 +134,24 @@ func (cb *defaultCircuitBreaker) GetState() State {
 //	return ""
 //}
 
-func (cb *defaultCircuitBreaker) Run(runnable Runnable) (err error) {
-	return cb.Go(runnable, nil)
+func (cb *defaultCircuitBreaker[T]) Run(ctx context.Context, runnable Runnable[T]) (v T, err error) {
+	return cb.ExecuteWithFallback(ctx, runnable, nil)
 }
 
-func (cb *defaultCircuitBreaker) Go(runnable, fallback Runnable) (err error) {
+func (cb *defaultCircuitBreaker[T]) ExecuteWithFallback(ctx context.Context, runnable, fallback Runnable[T]) (v T, err error) {
 	cb.acquire()
 	if cb.GetState() == StateOpen {
 		if fallback != nil {
-			return fallback()
+			return fallback(ctx)
 		} else {
-			return OpenStateErr
+			return v, OpenStateErr
 		}
 	}
 
-	defer func(pe *error) {
+	defer func(pv *T, pe *error) {
 		if o := recover(); o != nil {
 			if fallback != nil {
-				*pe = cb.runAndRelease(fallback, false)
+				*pv, *pe = cb.runAndRelease(ctx, fallback, false)
 			} else {
 				if oErr, ok := o.(error); ok {
 					*pe = oErr
@@ -162,14 +162,14 @@ func (cb *defaultCircuitBreaker) Go(runnable, fallback Runnable) (err error) {
 				panic(o)
 			}
 		}
-	}(&err)
+	}(&v, &err)
 
-	err = runnable()
+	v, err = runnable(ctx)
 
 	if err != nil {
 		if fallback != nil {
 			//v, err = safeRun(ctx, fallback)
-			err = cb.runAndRelease(fallback, false)
+			v, err = cb.runAndRelease(ctx, fallback, false)
 		} else {
 			cb.release(false)
 		}
@@ -177,10 +177,10 @@ func (cb *defaultCircuitBreaker) Go(runnable, fallback Runnable) (err error) {
 		cb.release(true)
 	}
 
-	return err
+	return v, err
 }
 
-func (cb *defaultCircuitBreaker) runAndRelease(runnable Runnable, success bool) (err error) {
+func (cb *defaultCircuitBreaker[T]) runAndRelease(ctx context.Context, runnable Runnable[T], success bool) (v T, err error) {
 	defer func(pe *error) {
 		if o := recover(); o != nil {
 			if oErr, ok := o.(error); ok {
@@ -192,12 +192,12 @@ func (cb *defaultCircuitBreaker) runAndRelease(runnable Runnable, success bool) 
 			panic(o)
 		}
 	}(&err)
-	err = runnable()
+	v, err = runnable(ctx)
 	cb.release(success)
 	return
 }
 
-func safeRun[T any](ctx context.Context, runnable Runnable) (err error) {
+func safeRun[T any](ctx context.Context, runnable Runnable[T]) (v T, err error) {
 	defer func(pe *error) {
 		if oo := recover(); oo != nil {
 			if oErr, ok := oo.(error); ok {
@@ -207,11 +207,11 @@ func safeRun[T any](ctx context.Context, runnable Runnable) (err error) {
 			}
 		}
 	}(&err)
-	err = runnable()
+	v, err = runnable(ctx)
 	return
 }
 
-func (cb *defaultCircuitBreaker) isExpired(now time.Time) bool {
+func (cb *defaultCircuitBreaker[T]) isExpired(now time.Time) bool {
 	cb.expiryLock.RLock()
 	defer cb.expiryLock.RUnlock()
 	if !cb.expiry.IsZero() && cb.expiry.Before(now) {
@@ -220,14 +220,14 @@ func (cb *defaultCircuitBreaker) isExpired(now time.Time) bool {
 	return false
 }
 
-func (cb *defaultCircuitBreaker) setExpiry(t time.Time) {
+func (cb *defaultCircuitBreaker[T]) setExpiry(t time.Time) {
 	cb.expiryLock.Lock()
 	defer cb.expiryLock.Unlock()
 
 	cb.expiry = t
 }
 
-func (cb *defaultCircuitBreaker) acquire() {
+func (cb *defaultCircuitBreaker[T]) acquire() {
 	cb.counter.MarkRequest()
 	now := time.Now()
 	if cb.isExpired(now) {
@@ -238,7 +238,7 @@ func (cb *defaultCircuitBreaker) acquire() {
 	}
 }
 
-func (cb *defaultCircuitBreaker) release(success bool) {
+func (cb *defaultCircuitBreaker[T]) release(success bool) {
 	if success {
 		cb.counter.MarkSuccess()
 		err := cb.fsm.SendEvent(EventSuccess, nil)

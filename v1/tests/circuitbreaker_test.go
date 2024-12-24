@@ -17,8 +17,9 @@
 package tests
 
 import (
-	"github.com/xfali/circuitbreaker"
+	"context"
 	"github.com/xfali/circuitbreaker/counter"
+	"github.com/xfali/circuitbreaker/v1"
 	"io"
 	"math/rand"
 	"testing"
@@ -26,7 +27,7 @@ import (
 )
 
 func TestDefault(t *testing.T) {
-	cb := circuitbreaker.NewCircuitBreaker(&circuitbreaker.Config{
+	cb := circuitbreakerv1.NewCircuitBreaker[string](&circuitbreakerv1.Config{
 		Interval: 3 * time.Second,
 		Counter: counter.NewCounter(func(consecutiveFailures uint64) bool {
 			return consecutiveFailures == 2
@@ -34,26 +35,26 @@ func TestDefault(t *testing.T) {
 	})
 	defer cb.Close()
 
-	d := &data{}
+	ctx, _ := context.WithTimeout(context.Background(), 10*time.Second)
 
 	t.Run("Execute", func(t *testing.T) {
 		for i := 0; i < 1000; i++ {
-			err := cb.Run(d.test)
+			v, err := cb.Run(ctx, test)
 			if err != nil {
 				t.Log(err)
 			} else {
-				t.Log(d.s)
+				t.Log(v)
 			}
 			time.Sleep(500 * time.Millisecond)
 		}
 	})
 	t.Run("ExecuteWithFallback", func(t *testing.T) {
 		for i := 0; i < 1000; i++ {
-			err := cb.Go(d.test, d.fallback)
+			v, err := cb.ExecuteWithFallback(ctx, test, fallback)
 			if err != nil {
 				t.Log(err)
 			} else {
-				t.Log(d.s)
+				t.Log(v)
 			}
 			time.Sleep(500 * time.Millisecond)
 		}
@@ -66,11 +67,11 @@ func TestDefault(t *testing.T) {
 						t.Log(o)
 					}
 				}()
-				err := cb.Run(d.testPanic)
+				v, err := cb.Run(ctx, testPanic)
 				if err != nil {
 					t.Log(err)
 				} else {
-					t.Log(d.s)
+					t.Log(v)
 				}
 				time.Sleep(500 * time.Millisecond)
 			}()
@@ -84,11 +85,11 @@ func TestDefault(t *testing.T) {
 						t.Log(o)
 					}
 				}()
-				err := cb.Go(d.testPanic, d.fallbackPanic)
+				v, err := cb.ExecuteWithFallback(ctx, testPanic, fallbackPanic)
 				if err != nil {
 					t.Log(err)
 				} else {
-					t.Log(d.s)
+					t.Log(v)
 				}
 				time.Sleep(500 * time.Millisecond)
 			}()
@@ -98,38 +99,30 @@ func TestDefault(t *testing.T) {
 
 var testRand = rand.New(rand.NewSource(time.Now().UnixNano()))
 
-type data struct {
-	s string
-}
-
-func (d *data) test() error {
+func test(ctx context.Context) (string, error) {
 	ret := testRand.Int() % 2
 	if ret == 1 {
-		return io.EOF
+		return "[Failure] from test", io.EOF
 	}
-	d.s = "[Normal] test"
-	return nil
+	return "[Normal] test", nil
 }
 
-func (d *data) fallback() error {
-	d.s = "[Fallback]"
-	return nil
+func fallback(ctx context.Context) (string, error) {
+	return "[Fallback]", nil
 }
 
-func (d *data) testPanic() error {
+func testPanic(ctx context.Context) (string, error) {
 	ret := testRand.Int() % 2
 	if ret == 1 {
 		panic("[Panic] from testPanic")
 	}
-	d.s = "[Normal] testPanic"
-	return nil
+	return "[Normal] testPanic", nil
 }
 
-func (d *data) fallbackPanic() error {
+func fallbackPanic(ctx context.Context) (string, error) {
 	ret := testRand.Int() % 2
 	if ret == 1 {
 		panic("[Panic] from fallbackPanic")
 	}
-	d.s = "[Fallback] from fallbackPanic"
-	return nil
+	return "[Fallback] from fallbackPanic", nil
 }

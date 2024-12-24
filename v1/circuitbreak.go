@@ -14,9 +14,10 @@
  * limitations under the License.
  */
 
-package circuitbreaker
+package circuitbreakerv1
 
 import (
+	"context"
 	"io"
 )
 
@@ -40,14 +41,14 @@ func (s State) String() string {
 	return stateNameMap[s]
 }
 
-type Runnable func() error
+type Runnable[T any] func(ctx context.Context) (T, error)
 
-type CircuitBreaker interface {
+type CircuitBreaker[T any] interface {
 	GetState() State
 
-	Run(runnable Runnable) error
+	Run(ctx context.Context, runnable Runnable[T]) (T, error)
 
-	Go(runnable, fallback Runnable) error
+	Go(ctx context.Context, runnable, fallback Runnable[T]) (T, error)
 
 	io.Closer
 }
