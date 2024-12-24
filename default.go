@@ -142,7 +142,7 @@ func (cb *defaultCircuitBreaker[T]) ExecuteWithFallback(ctx context.Context, run
 	cb.acquire()
 	if cb.GetState() == StateOpen {
 		if fallback != nil {
-			return safeRun(ctx, fallback)
+			return fallback(ctx)
 		} else {
 			return v, OpenStateErr
 		}
@@ -151,8 +151,7 @@ func (cb *defaultCircuitBreaker[T]) ExecuteWithFallback(ctx context.Context, run
 	defer func(pv *T, pe *error) {
 		if o := recover(); o != nil {
 			if fallback != nil {
-				*pv, *pe = safeRun(ctx, fallback)
-				cb.release(false)
+				*pv, *pe = cb.runAndRelease(ctx, fallback, false)
 			} else {
 				if oErr, ok := o.(error); ok {
 					*pe = oErr
@@ -169,14 +168,33 @@ func (cb *defaultCircuitBreaker[T]) ExecuteWithFallback(ctx context.Context, run
 
 	if err != nil {
 		if fallback != nil {
-			v, err = safeRun(ctx, fallback)
+			//v, err = safeRun(ctx, fallback)
+			v, err = cb.runAndRelease(ctx, fallback, false)
+		} else {
+			cb.release(false)
 		}
-		cb.release(false)
 	} else {
 		cb.release(true)
 	}
 
 	return v, err
+}
+
+func (cb *defaultCircuitBreaker[T]) runAndRelease(ctx context.Context, runnable Runnable[T], success bool) (v T, err error) {
+	defer func(pe *error) {
+		if o := recover(); o != nil {
+			if oErr, ok := o.(error); ok {
+				*pe = oErr
+			} else {
+				*pe = errors.New("Execute panic error ")
+			}
+			cb.release(success)
+			panic(o)
+		}
+	}(&err)
+	v, err = runnable(ctx)
+	cb.release(success)
+	return
 }
 
 func safeRun[T any](ctx context.Context, runnable Runnable[T]) (v T, err error) {

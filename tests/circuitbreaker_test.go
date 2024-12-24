@@ -37,23 +37,92 @@ func TestDefault(t *testing.T) {
 
 	ctx, _ := context.WithTimeout(context.Background(), 10*time.Second)
 
-	for i := 0; i < 1000; i++ {
-		v, err := cb.Execute(ctx, test)
-		if err != nil {
-			t.Log(err)
-		} else {
-			t.Log(v)
+	t.Run("Execute", func(t *testing.T) {
+		for i := 0; i < 1000; i++ {
+			v, err := cb.Execute(ctx, test)
+			if err != nil {
+				t.Log(err)
+			} else {
+				t.Log(v)
+			}
+			time.Sleep(500 * time.Millisecond)
 		}
-		time.Sleep(500 * time.Millisecond)
-	}
+	})
+	t.Run("ExecuteWithFallback", func(t *testing.T) {
+		for i := 0; i < 1000; i++ {
+			v, err := cb.ExecuteWithFallback(ctx, test, fallback)
+			if err != nil {
+				t.Log(err)
+			} else {
+				t.Log(v)
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+	})
+	t.Run("Execute panic", func(t *testing.T) {
+		for i := 0; i < 1000; i++ {
+			func() {
+				defer func() {
+					if o := recover(); o != nil {
+						t.Log(o)
+					}
+				}()
+				v, err := cb.Execute(ctx, testPanic)
+				if err != nil {
+					t.Log(err)
+				} else {
+					t.Log(v)
+				}
+				time.Sleep(500 * time.Millisecond)
+			}()
+		}
+	})
+	t.Run("ExecuteWithFallback panic", func(t *testing.T) {
+		for i := 0; i < 1000; i++ {
+			func() {
+				defer func() {
+					if o := recover(); o != nil {
+						t.Log(o)
+					}
+				}()
+				v, err := cb.ExecuteWithFallback(ctx, testPanic, fallbackPanic)
+				if err != nil {
+					t.Log(err)
+				} else {
+					t.Log(v)
+				}
+				time.Sleep(500 * time.Millisecond)
+			}()
+		}
+	})
 }
 
-func test(ctx context.Context) (string, error) {
-	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+var testRand = rand.New(rand.NewSource(time.Now().UnixNano()))
 
-	ret := r.Int() % 2
+func test(ctx context.Context) (string, error) {
+	ret := testRand.Int() % 2
 	if ret == 1 {
-		return "1", io.EOF
+		return "[Failure] from test", io.EOF
 	}
-	return "0", nil
+	return "[Normal] test", nil
+}
+
+func fallback(ctx context.Context) (string, error) {
+	return "[Fallback]", nil
+}
+
+func testPanic(ctx context.Context) (string, error) {
+	ret := testRand.Int() % 2
+	if ret == 1 {
+		panic("[Panic] from testPanic")
+	}
+	return "[Normal] testPanic", nil
+}
+
+func fallbackPanic(ctx context.Context) (string, error) {
+	ret := testRand.Int() % 2
+	if ret == 1 {
+		panic("[Panic] from fallbackPanic")
+	}
+	return "[Fallback] from fallbackPanic", nil
 }
