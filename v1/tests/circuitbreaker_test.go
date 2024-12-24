@@ -28,11 +28,17 @@ import (
 )
 
 func TestDefault(t *testing.T) {
+	c := counter.NewCounter(nil)
+	c.SetCheckFunc(func(data counter.Data) bool {
+		v := data.ConsecutiveFailures == 2
+		if v {
+			c.Reset()
+		}
+		return v
+	})
 	cb := circuitbreakerv1.NewCircuitBreaker[string](&circuitbreaker.Config{
 		Interval: 3 * time.Second,
-		Counter: counter.NewCounter(func(consecutiveFailures uint64) bool {
-			return consecutiveFailures == 2
-		}),
+		Counter:  c,
 	})
 	defer cb.Close()
 

@@ -18,50 +18,67 @@ package counter
 
 import "sync/atomic"
 
-type SimpleCounter struct {
+type Data struct {
 	RequestNum          uint64
 	SuccessNum          uint64
 	FailureNum          uint64
 	ConsecutiveFailures uint64
-
-	checkFunc func(consecutiveFailures uint64) bool
 }
 
-func DefaultAllowFunc(consecutiveFailures uint64) bool {
-	return consecutiveFailures > 5
+type simpleCounter struct {
+	requestNum          uint64
+	successNum          uint64
+	failureNum          uint64
+	consecutiveFailures uint64
+
+	checkFunc func(data Data) bool
 }
 
-func NewCounter(checkFunc func(consecutiveFailures uint64) bool) *SimpleCounter {
-	return &SimpleCounter{
+func DefaultAllowFunc(data Data) bool {
+	return data.ConsecutiveFailures > 5
+}
+
+func NewCounter(checkFunc func(data Data) bool) *simpleCounter {
+	return &simpleCounter{
 		checkFunc: checkFunc,
 	}
 }
 
-func (c *SimpleCounter) MarkRequest() {
-	atomic.AddUint64(&c.RequestNum, 1)
+func (c *simpleCounter) SetCheckFunc(checkFunc func(data Data) bool) {
+	c.checkFunc = checkFunc
 }
 
-func (c *SimpleCounter) MarkSuccess() {
-	atomic.AddUint64(&c.SuccessNum, 1)
-	atomic.StoreUint64(&c.ConsecutiveFailures, 0)
+func (c *simpleCounter) MarkRequest() {
+	atomic.AddUint64(&c.requestNum, 1)
 }
 
-func (c *SimpleCounter) MarkFailure() {
-	atomic.AddUint64(&c.FailureNum, 1)
-	atomic.AddUint64(&c.ConsecutiveFailures, 1)
+func (c *simpleCounter) MarkSuccess() {
+	atomic.AddUint64(&c.successNum, 1)
+	atomic.StoreUint64(&c.consecutiveFailures, 0)
 }
 
-func (c *SimpleCounter) Triggered() bool {
-	return c.checkFunc(atomic.LoadUint64(&c.ConsecutiveFailures))
+func (c *simpleCounter) MarkFailure() {
+	atomic.AddUint64(&c.failureNum, 1)
+	atomic.AddUint64(&c.consecutiveFailures, 1)
 }
 
-func (c *SimpleCounter) Reset() {
-	atomic.StoreUint64(&c.RequestNum, 0)
-	atomic.StoreUint64(&c.SuccessNum, 0)
-	atomic.StoreUint64(&c.FailureNum, 0)
-	atomic.StoreUint64(&c.ConsecutiveFailures, 0)
+func (c *simpleCounter) Triggered() bool {
+	d := Data{
+		RequestNum:          atomic.LoadUint64(&c.requestNum),
+		SuccessNum:          atomic.LoadUint64(&c.successNum),
+		FailureNum:          atomic.LoadUint64(&c.failureNum),
+		ConsecutiveFailures: atomic.LoadUint64(&c.consecutiveFailures),
+	}
+	return c.checkFunc(d)
 }
 
-func (c *SimpleCounter) Stop() {
+func (c *simpleCounter) Reset() {
+	atomic.StoreUint64(&c.requestNum, 0)
+	atomic.StoreUint64(&c.successNum, 0)
+	atomic.StoreUint64(&c.failureNum, 0)
+	atomic.StoreUint64(&c.consecutiveFailures, 0)
+}
+
+func (c *simpleCounter) Stop() {
 
 }
